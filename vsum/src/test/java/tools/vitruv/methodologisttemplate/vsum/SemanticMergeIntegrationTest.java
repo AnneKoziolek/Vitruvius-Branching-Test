@@ -23,7 +23,9 @@ import tools.vitruv.framework.views.CommittableView;
 import tools.vitruv.framework.views.ViewTypeFactory;
 import tools.vitruv.framework.vsum.VirtualModel;
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
+import tools.vitruv.framework.vsum.branch.merge.ChangeLogCapture;
 import tools.vitruv.framework.vsum.branch.merge.GitStateLoader;
+import tools.vitruv.framework.vsum.branch.merge.SemanticChangeLog;
 import tools.vitruv.framework.vsum.branch.merge.SemanticMergeCommand;
 import tools.vitruv.framework.vsum.branch.merge.SemanticMergeResult;
 import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
@@ -145,6 +147,70 @@ public class SemanticMergeIntegrationTest {
             mergedVsum.dispose();
 
             java.lang.System.out.println("=== Semantic Merge Integration Test PASSED ===");
+        }
+    }
+
+    @Test
+    @DisplayName("changelog capture and JSON DTO persistence round-trip")
+    void changelogCaptureAndPersistence(@TempDir Path tempDir) throws Exception {
+        try (var git = Git.init().setDirectory(tempDir.toFile()).setInitialBranch("main").call()) {
+            // Create VSUM with initial component
+            InternalVirtualModel vsum = createVirtualModel(tempDir);
+            addSystemWithComponent(vsum, tempDir, "InitialComponent");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Initial commit").call();
+
+            // Register changelog capture
+            var capture = ChangeLogCapture.create(vsum.getUuidResolver(),
+                    vsum.getViewSourceModels().iterator().next().getResourceSet());
+            vsum.addChangePropagationListener(capture);
+
+            // Add a component — this will be captured
+            addComponentToSystem(vsum, "NewComponent");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Added NewComponent").call();
+            String commitSha = git.log().setMaxCount(1).call().iterator().next().getName();
+
+            // Drain and persist
+            var capturedChanges = capture.drainChanges();
+            assertFalse(capturedChanges.isEmpty(), "Should have captured changes");
+
+            // Save to JSON
+            new SemanticChangeLog(commitSha, "main", capturedChanges).saveTo(tempDir);
+            assertTrue(SemanticChangeLog.existsFor(tempDir, commitSha), "Changelog should exist");
+
+            // Load JSON DTOs
+            var dtos = SemanticChangeLog.loadDtosFrom(tempDir, commitSha);
+            assertEquals(capturedChanges.size(), dtos.size(),
+                    "DTO count should match captured change count");
+
+            // Verify change types are preserved in DTOs
+            for (int i = 0; i < capturedChanges.size(); i++) {
+                String expectedType = capturedChanges.get(i).getClass().getSimpleName()
+                        .replaceAll("Impl$", "");
+                assertEquals(expectedType, dtos.get(i).changeType,
+                        "Change type should be preserved at index " + i);
+            }
+
+            // Verify a CreateEObject is captured (for the new Component)
+            assertTrue(dtos.stream().anyMatch(d -> d.changeType.contains("Create")),
+                    "Should contain a CreateEObject for the new component");
+
+            // Verify an InsertEReference is captured (component added to system)
+            assertTrue(dtos.stream().anyMatch(d -> "InsertEReference".equals(d.changeType)
+                            && "components".equals(d.featureName)),
+                    "Should contain InsertEReference for components");
+
+            // Verify a ReplaceSingleValuedEAttribute is captured (name set)
+            assertTrue(dtos.stream().anyMatch(d -> d.changeType.contains("ReplaceSingleValuedEAttribute")
+                            && "name".equals(d.featureName)
+                            && "NewComponent".equals(d.newLiteralValue)),
+                    "Should contain name attribute change");
+
+            vsum.dispose();
+            java.lang.System.out.println("=== Changelog Capture & Persistence PASSED ===");
         }
     }
 
