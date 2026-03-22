@@ -24,6 +24,7 @@ import tools.vitruv.framework.views.ViewTypeFactory;
 import tools.vitruv.framework.vsum.VirtualModel;
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
 import tools.vitruv.framework.vsum.branch.merge.ChangeLogCapture;
+import tools.vitruv.framework.vsum.branch.merge.ConflictResolutionProvider;
 import tools.vitruv.framework.vsum.branch.merge.GitStateLoader;
 import tools.vitruv.framework.vsum.branch.merge.SemanticChangeLog;
 import tools.vitruv.framework.vsum.branch.merge.SemanticMergeCommand;
@@ -214,6 +215,194 @@ public class SemanticMergeIntegrationTest {
         }
     }
 
+    @Test
+    @DisplayName("both branches rename same component: conflict detected via UUID changelogs")
+    void renameSameComponent_conflict(@TempDir Path tempDir) throws Exception {
+        var interactionProvider = new TestUserInteraction.ResultProvider(new TestUserInteraction());
+        var spec = new Model2Model2ChangePropagationSpecification();
+
+        try (var git = Git.init().setDirectory(tempDir.toFile()).setInitialBranch("main").call()) {
+            // Base: System with "Shared" component
+            InternalVirtualModel vsum = createVirtualModel(tempDir);
+            addSystemWithComponent(vsum, tempDir, "Shared");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Base with Shared").call();
+
+            // Feature branch: rename Shared → ServiceB
+            git.branchCreate().setName("feature").call();
+            git.checkout().setName("feature").call();
+
+            var capture = ChangeLogCapture.create(vsum.getUuidResolver(),
+                    vsum.getViewSourceModels().iterator().next().getResourceSet());
+            vsum.addChangePropagationListener(capture);
+
+            renameComponent(vsum, "Shared", "ServiceB");
+
+            // Commit model changes, save changelog with a placeholder SHA,
+            // then make a second commit that includes the changelog
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Renamed to ServiceB").call();
+            // Save changelog (use placeholder SHA, will be re-keyed by second commit)
+            var featureChanges = capture.drainChanges();
+            var featureUuidMap = capture.drainUuidMapping();
+            // Save with a deterministic key derived from branch name
+            new SemanticChangeLog("feature", "feature", featureChanges, featureUuidMap).saveTo(tempDir);
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Add changelog for feature rename").call();
+
+            // Main branch: rename Shared → ServiceA
+            git.checkout().setName("main").call();
+            vsum.reload();
+            vsum.removeChangePropagationListener(capture);
+            capture = ChangeLogCapture.create(vsum.getUuidResolver(),
+                    vsum.getViewSourceModels().iterator().next().getResourceSet());
+            vsum.addChangePropagationListener(capture);
+
+            renameComponent(vsum, "Shared", "ServiceA");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Renamed to ServiceA").call();
+            var mainChanges = capture.drainChanges();
+            var mainUuidMap = capture.drainUuidMapping();
+            new SemanticChangeLog("main___", "main", mainChanges, mainUuidMap).saveTo(tempDir);
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Add changelog for main rename").call();
+
+            vsum.dispose();
+
+            // Debug: check what changelogs exist on disk
+            java.lang.System.out.println("=== DEBUG: Changelogs on disk ===");
+            var clDir = tempDir.resolve(".vitruvius/semantic-changelogs");
+            if (java.nio.file.Files.exists(clDir)) {
+                java.nio.file.Files.list(clDir).forEach(f ->
+                        java.lang.System.out.println("  " + f.getFileName()));
+            } else {
+                java.lang.System.out.println("  (no changelog dir)");
+            }
+            // Check feature SHA after amend
+            String actualFeatureSha = git.log().add(git.getRepository().resolve("feature"))
+                    .setMaxCount(1).call().iterator().next().getName();
+            String actualMainSha = git.log().setMaxCount(1).call().iterator().next().getName();
+            java.lang.System.out.println("Feature SHA (after amend): " + actualFeatureSha);
+            java.lang.System.out.println("Main SHA (after amend): " + actualMainSha);
+            java.lang.System.out.println("Feature changelog exists: " + SemanticChangeLog.existsFor(tempDir, actualFeatureSha));
+            java.lang.System.out.println("Main changelog exists: " + SemanticChangeLog.existsFor(tempDir, actualMainSha));
+
+            // Merge without resolution → should report CONFLICT
+            SemanticMergeCommand mergeCmd = new SemanticMergeCommand();
+            SemanticMergeResult result = mergeCmd.execute(
+                    tempDir, "feature", "main",
+                    List.of(spec), interactionProvider);
+
+            assertFalse(result.isSuccess(), "Merge should detect a conflict");
+            assertEquals(SemanticMergeResult.Status.CONFLICT, result.getStatus());
+            assertFalse(result.getConflicts().isEmpty(), "Should have at least one conflict");
+
+            var conflict = result.getConflicts().get(0);
+            assertEquals("name", conflict.getConflictingFeature(),
+                    "Conflict should be on the 'name' feature");
+
+            java.lang.System.out.println("=== Rename Conflict Test PASSED ===");
+            java.lang.System.out.println("Conflict: " + conflict);
+        }
+    }
+
+    @Test
+    @DisplayName("rename conflict resolved by choosing theirs")
+    void renameConflict_resolveWithTheirs(@TempDir Path tempDir) throws Exception {
+        var interactionProvider = new TestUserInteraction.ResultProvider(new TestUserInteraction());
+        var spec = new Model2Model2ChangePropagationSpecification();
+
+        try (var git = Git.init().setDirectory(tempDir.toFile()).setInitialBranch("main").call()) {
+            InternalVirtualModel vsum = createVirtualModel(tempDir);
+            addSystemWithComponent(vsum, tempDir, "Shared");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Base").call();
+
+            // Feature: rename → ServiceB
+            git.branchCreate().setName("feature").call();
+            git.checkout().setName("feature").call();
+            var capture = ChangeLogCapture.create(vsum.getUuidResolver(),
+                    vsum.getViewSourceModels().iterator().next().getResourceSet());
+            vsum.addChangePropagationListener(capture);
+            renameComponent(vsum, "Shared", "ServiceB");
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Renamed to ServiceB").call();
+            String featureSha = git.log().setMaxCount(1).call().iterator().next().getName();
+            new SemanticChangeLog(featureSha, "feature", capture.drainChanges(),
+                    capture.drainUuidMapping()).saveTo(tempDir);
+            git.add().addFilepattern(".").call();
+            git.commit().setAmend(true).setMessage("Renamed to ServiceB").call();
+
+            // Main: rename → ServiceA
+            git.checkout().setName("main").call();
+            vsum.reload();
+            vsum.removeChangePropagationListener(capture);
+            capture = ChangeLogCapture.create(vsum.getUuidResolver(),
+                    vsum.getViewSourceModels().iterator().next().getResourceSet());
+            vsum.addChangePropagationListener(capture);
+            renameComponent(vsum, "Shared", "ServiceA");
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Renamed to ServiceA").call();
+            String mainSha = git.log().setMaxCount(1).call().iterator().next().getName();
+            new SemanticChangeLog(mainSha, "main", capture.drainChanges(),
+                    capture.drainUuidMapping()).saveTo(tempDir);
+            git.add().addFilepattern(".").call();
+            git.commit().setAmend(true).setMessage("Renamed to ServiceA").call();
+            vsum.dispose();
+
+            // Merge with "choose theirs" resolution
+            SemanticMergeCommand mergeCmd = new SemanticMergeCommand();
+            SemanticMergeResult result = mergeCmd.execute(
+                    tempDir, "feature", "main", List.of(spec), interactionProvider,
+                    ConflictResolutionProvider.chooseAllTheirs());
+
+            // The merge should succeed (conflicts were resolved)
+            assertTrue(result.isSuccess(),
+                    "Merge with resolution should succeed. Status: " + result.getStatus());
+
+            java.lang.System.out.println("=== Resolve With Theirs PASSED === " + result);
+        }
+    }
+
+    @Test
+    @DisplayName("empty branch merge produces no-op")
+    void emptyBranchMerge(@TempDir Path tempDir) throws Exception {
+        var interactionProvider = new TestUserInteraction.ResultProvider(new TestUserInteraction());
+        var spec = new Model2Model2ChangePropagationSpecification();
+
+        try (var git = Git.init().setDirectory(tempDir.toFile()).setInitialBranch("main").call()) {
+            InternalVirtualModel vsum = createVirtualModel(tempDir);
+            addSystemWithComponent(vsum, tempDir, "OnlyComponent");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Base").call();
+
+            // Feature branch: no changes
+            git.branchCreate().setName("feature").call();
+            git.checkout().setName("feature").call();
+            git.commit().setAllowEmpty(true).setMessage("Empty commit on feature").call();
+
+            // Main: add another component
+            git.checkout().setName("main").call();
+            vsum.reload();
+            addComponentToSystem(vsum, "MainOnly");
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Added MainOnly").call();
+            vsum.dispose();
+
+            SemanticMergeCommand mergeCmd = new SemanticMergeCommand();
+            SemanticMergeResult result = mergeCmd.execute(
+                    tempDir, "feature", "main", List.of(spec), interactionProvider);
+
+            assertTrue(result.isSuccess(), "Empty branch merge should succeed");
+
+            java.lang.System.out.println("=== Empty Branch Merge PASSED ===");
+        }
+    }
+
     // === Helper methods ===
 
     private InternalVirtualModel createVirtualModel(Path projectPath) throws IOException {
@@ -241,6 +430,17 @@ public class SemanticMergeIntegrationTest {
         var component = ModelFactory.eINSTANCE.createComponent();
         component.setName(componentName);
         system.getComponents().add(component);
+        view.commitChanges();
+    }
+
+    private void renameComponent(VirtualModel vsum, String oldName, String newName) {
+        var view = getDefaultView(vsum).withChangeDerivingTrait();
+        var system = view.getRootObjects(System.class).iterator().next();
+        var component = system.getComponents().stream()
+                .filter(c -> c.getName().equals(oldName))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Component not found: " + oldName));
+        component.setName(newName);
         view.commitChanges();
     }
 
