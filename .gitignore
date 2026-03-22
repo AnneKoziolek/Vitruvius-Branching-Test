@@ -1,0 +1,11 @@
+viewtype/target/*
+vsum/target/*
+consistency/target/*
+model/target/*
+model/META-INF/
+model/build.properties
+model/plugin.properties
+model/plugin.xml
+.mvn/wrapper/maven-wrapper.jar
+three-way-merge-plan.md
+claude-branching-plan.md
