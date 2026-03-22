@@ -433,8 +433,18 @@ public class SemanticMergeIntegrationTest {
         view.commitChanges();
     }
 
+    /**
+     * Renames a component using fine-grained change recording (not state diff).
+     * This produces a single ReplaceSingleValuedEAttribute change that preserves
+     * the element's UUID, enabling proper conflict detection across branches.
+     */
     private void renameComponent(VirtualModel vsum, String oldName, String newName) {
-        var view = getDefaultView(vsum).withChangeDerivingTrait();
+        var selector = vsum.createSelector(ViewTypeFactory.createIdentityMappingViewType("rename"));
+        selector.getSelectableElements().stream()
+                .filter(element -> element instanceof System)
+                .forEach(it -> selector.setSelected(it, true));
+        // Use change RECORDING (not deriving) to capture the actual rename operation
+        var view = selector.createView().withChangeRecordingTrait();
         var system = view.getRootObjects(System.class).iterator().next();
         var component = system.getComponents().stream()
                 .filter(c -> c.getName().equals(oldName))
