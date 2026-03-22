@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import mir.reactions.model2Model2.Model2Model2ChangePropagationSpecification;
 import org.eclipse.emf.common.util.URI;
@@ -21,11 +23,7 @@ import tools.vitruv.framework.views.CommittableView;
 import tools.vitruv.framework.views.ViewTypeFactory;
 import tools.vitruv.framework.vsum.VirtualModel;
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
-import tools.vitruv.change.atomic.uuid.Uuid;
-import tools.vitruv.change.composite.description.PropagatedChange;
-import tools.vitruv.change.composite.propagation.ChangePropagationListener;
-import tools.vitruv.framework.vsum.branch.merge.ChangeLogCapture;
-import tools.vitruv.framework.vsum.branch.merge.SemanticChangeLog;
+import tools.vitruv.framework.vsum.branch.merge.GitStateLoader;
 import tools.vitruv.framework.vsum.branch.merge.SemanticMergeCommand;
 import tools.vitruv.framework.vsum.branch.merge.SemanticMergeResult;
 import tools.vitruv.framework.vsum.internal.InternalVirtualModel;
@@ -35,9 +33,13 @@ import tools.vitruv.methodologisttemplate.model.model.System;
 /**
  * Integration test for the semantic three-way merge.
  *
- * <p>Scenario: Two branches make non-conflicting additions to a shared model.
- * The semantic merge replays source branch changes onto the target, preserving
- * consistency (reactions fire, correspondences maintained).
+ * <p>Scenario: Two branches diverge from a common ancestor and make non-conflicting
+ * additions to a shared model. The semantic merge derives changes via EMFCompare
+ * and replays source branch changes onto the target VSUM via {@code propagateChange()},
+ * so reactions fire and derived models are kept consistent.
+ *
+ * <p>Expected merged state: all components from both branches plus their
+ * corresponding entities from the model2 metamodel (created by reactions).
  */
 public class SemanticMergeIntegrationTest {
 
@@ -47,100 +49,49 @@ public class SemanticMergeIntegrationTest {
     }
 
     @Test
-    @DisplayName("non-conflicting merge combines components from both branches")
+    @DisplayName("non-conflicting merge combines components from both branches with reactions")
     void nonConflictingMerge(@TempDir Path tempDir) throws Exception {
         var interactionProvider = new TestUserInteraction.ResultProvider(new TestUserInteraction());
         var spec = new Model2Model2ChangePropagationSpecification();
 
         try (var git = Git.init().setDirectory(tempDir.toFile()).setInitialBranch("main").call()) {
-            // === Step 1: Create VSUM with InitialComponent on main ===
+            // === Step 1: Create VSUM with InitialComponent on main (this is the merge base) ===
             InternalVirtualModel vsum = createVirtualModel(tempDir);
             addSystemWithComponent(vsum, tempDir, "InitialComponent");
 
-            // Register the change log capture listener (after first model exists
-            // so we can obtain the ResourceSet)
-            var capture = ChangeLogCapture.create(vsum.getUuidResolver(),
-                    vsum.getViewSourceModels().iterator().next().getResourceSet());
-            vsum.addChangePropagationListener(capture);
-
-            // Also add a debug listener to verify propagation events are firing
-            vsum.addChangePropagationListener(new ChangePropagationListener() {
-                @Override
-                public void startedChangePropagation(tools.vitruv.change.composite.description.VitruviusChange<Uuid> c) {
-                    java.lang.System.out.println("[DEBUG] propagateChange fired! EChanges count: " + c.getEChanges().size());
-                }
-                @Override
-                public void finishedChangePropagation(Iterable<PropagatedChange> p) {}
-            });
-
-            // Verify initial state
             CommittableView view = getDefaultView(vsum);
             var system = view.getRootObjects(System.class).iterator().next();
             assertEquals(1, system.getComponents().size());
             assertEquals("InitialComponent", system.getComponents().get(0).getName());
 
-            // Commit to main
             git.add().addFilepattern(".").call();
             git.commit().setMessage("Initial commit on main").call();
-            String mainCommitSha = git.log().setMaxCount(1).call().iterator().next().getName();
-
-            // Initial commit's changes weren't captured (capture not yet registered)
-            // Drain any stale state
-            capture.drainChanges();
 
             // === Step 2: Create feature branch, add FeatureComponent ===
             git.branchCreate().setName("feature").call();
             git.checkout().setName("feature").call();
 
             addComponentToSystem(vsum, "FeatureComponent");
-            java.lang.System.out.println("Captured changes after FeatureComponent: " + capture.getBufferedChangeCount());
 
-            // Verify feature state
             view = getDefaultView(vsum);
             system = view.getRootObjects(System.class).iterator().next();
             assertEquals(2, system.getComponents().size());
 
-            // Commit to feature
             git.add().addFilepattern(".").call();
             git.commit().setMessage("Added FeatureComponent").call();
-            String featureCommitSha = git.log().setMaxCount(1).call().iterator().next().getName();
-            java.lang.System.out.println("Feature commit SHA: " + featureCommitSha);
-
-            // Persist changelog
-            var capturedChanges = capture.drainChanges();
-            java.lang.System.out.println("Drained changes for feature: " + capturedChanges.size());
-            if (!capturedChanges.isEmpty()) {
-                new SemanticChangeLog(featureCommitSha, "feature", capturedChanges).saveTo(tempDir);
-                java.lang.System.out.println("Saved feature changelog");
-            }
 
             // === Step 3: Switch back to main, add MainComponent ===
             git.checkout().setName("main").call();
             vsum.reload();
 
-            // Re-register capture after reload (UuidResolver is recreated)
-            vsum.removeChangePropagationListener(capture);
-            capture = ChangeLogCapture.create(vsum.getUuidResolver(),
-                    vsum.getViewSourceModels().iterator().next().getResourceSet());
-            vsum.addChangePropagationListener(capture);
-
             addComponentToSystem(vsum, "MainComponent");
 
-            // Verify main state
             view = getDefaultView(vsum);
             system = view.getRootObjects(System.class).iterator().next();
             assertEquals(2, system.getComponents().size());
 
-            // Commit to main
             git.add().addFilepattern(".").call();
             git.commit().setMessage("Added MainComponent on main").call();
-            String mainCommit2Sha = git.log().setMaxCount(1).call().iterator().next().getName();
-
-            // Persist changelog
-            capturedChanges = capture.drainChanges();
-            if (!capturedChanges.isEmpty()) {
-                new SemanticChangeLog(mainCommit2Sha, "main", capturedChanges).saveTo(tempDir);
-            }
 
             vsum.dispose();
 
@@ -150,35 +101,54 @@ public class SemanticMergeIntegrationTest {
                     tempDir, "feature", "main",
                     List.of(spec), interactionProvider);
 
-            // === Step 5: Verify merge result ===
-            // Verify changelogs were persisted for both branches
-            assertTrue(SemanticChangeLog.existsFor(tempDir, featureCommitSha),
-                    "Feature branch changelog should be persisted");
-            assertTrue(SemanticChangeLog.existsFor(tempDir, mainCommit2Sha),
-                    "Main branch changelog should be persisted");
-
-            // Verify the semantic merge succeeded (non-conflicting changes)
+            // === Step 5: Verify merge succeeded ===
+            if (!result.isSuccess()) {
+                java.lang.System.out.println("=== CONFLICTS DETECTED ===");
+                for (var conflict : result.getConflicts()) {
+                    java.lang.System.out.println("  " + conflict);
+                }
+            }
             assertTrue(result.isSuccess(), "Merge should succeed without conflicts");
+            assertFalse(result.getAppliedChanges().isEmpty(),
+                    "Should have replayed source changes");
+            assertNotNull(result.getMergedStateFolder(),
+                    "Merged state should be written to disk");
 
-            // Verify changelog DTOs can be loaded and contain the right data
-            var featureDtos = SemanticChangeLog.loadDtosFrom(tempDir, featureCommitSha);
-            assertFalse(featureDtos.isEmpty(), "Feature changelog should contain changes");
-            // The feature branch added a Component (CreateEObject + InsertEReference + attribute set)
-            assertTrue(featureDtos.stream().anyMatch(
-                    d -> d.changeType.contains("Create")),
-                    "Feature changelog should contain a CreateEObject change");
+            // === Step 6: Load the merged VSUM and verify model state ===
+            InternalVirtualModel mergedVsum = GitStateLoader.loadVsumFromDir(
+                    result.getMergedStateFolder(),
+                    List.of(new Model2Model2ChangePropagationSpecification()),
+                    interactionProvider);
 
-            var mainDtos = SemanticChangeLog.loadDtosFrom(tempDir, mainCommit2Sha);
-            assertFalse(mainDtos.isEmpty(), "Main changelog should contain changes");
+            view = getDefaultView(mergedVsum);
+            system = view.getRootObjects(System.class).iterator().next();
+
+            // The merged state should have ALL THREE components
+            Set<String> componentNames = system.getComponents().stream()
+                    .map(c -> c.getName())
+                    .collect(Collectors.toSet());
+
+            java.lang.System.out.println("=== Merged model state ===");
+            java.lang.System.out.println("Components: " + componentNames);
+            java.lang.System.out.println("Component count: " + system.getComponents().size());
+            java.lang.System.out.println("Applied changes: " + result.getAppliedChanges().size());
+
+            assertEquals(3, system.getComponents().size(),
+                    "Merged system should have 3 components (Initial + Feature + Main)");
+            assertTrue(componentNames.contains("InitialComponent"),
+                    "Merged system should contain InitialComponent");
+            assertTrue(componentNames.contains("FeatureComponent"),
+                    "Merged system should contain FeatureComponent from source branch");
+            assertTrue(componentNames.contains("MainComponent"),
+                    "Merged system should contain MainComponent from target branch");
+
+            mergedVsum.dispose();
 
             java.lang.System.out.println("=== Semantic Merge Integration Test PASSED ===");
-            java.lang.System.out.println("Feature changelog: " + featureDtos.size() + " changes");
-            java.lang.System.out.println("Main changelog: " + mainDtos.size() + " changes");
-            java.lang.System.out.println("Merge result: " + result);
         }
     }
 
-    // === Helper methods (same pattern as BranchSwitchingIntegrationTest) ===
+    // === Helper methods ===
 
     private InternalVirtualModel createVirtualModel(Path projectPath) throws IOException {
         return new VirtualModelBuilder()
