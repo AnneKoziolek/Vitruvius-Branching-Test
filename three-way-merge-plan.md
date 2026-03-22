@@ -865,8 +865,8 @@ The following has been implemented and tested:
 
 ### Open Work
 
-- EChange deserialization from JSON DTOs (reconstruct live `EChange<HierarchicalId>` for direct replay)
-- DELETE_MODIFY conflict handling (deletion + modification)
-- Rename propagation verification (rename Component → Entity also renamed)
-- Multi-commit branches (multiple changelogs per merge range)
-- Git merge driver integration
+- ~~EChange deserialization from JSON DTOs~~ **DONE** (`ChangeDtoDeserializer` with cache ID handling)
+- ~~DELETE_MODIFY conflict handling~~ **DONE** (`UuidConflictDetector` detects delete-vs-modify)
+- Rename propagation verification (rename Component → Entity also renamed via reactions)
+- ~~Multi-commit branches~~ **DONE** (`loadAllDtosFromDir()` loads all changelogs)
+- Git merge driver integration (`.gitattributes`/`.gitconfig` not yet configured)

@@ -107,7 +107,7 @@ JGit requires `.git/` to exist. Vitruv validates this in the `BranchManager` con
 | Resolve ref | `repo.findRef("refs/heads/" + name)` | BranchManager.resolveBranchIdentifier() |
 | Read commit | `RevWalk.parseCommit(objectId)` | PostCommitHandler, GitStateLoader |
 | Find merge base | `RevWalk` with `MERGE_BASE` filter | GitStateLoader.findMergeBase() |
-| Walk commit range | `RevWalk.markStart() / markUninteresting()` | ChangeExtractor.getCommitsBetween() |
+| Load changelogs | Read JSON from `.vitruvius/semantic-changelogs/` | SemanticMergeEngine.loadAllDtosFromDir() |
 | Clone repo | `Git.cloneRepository().setURI(uri).call()` | GitStateLoader.checkoutStateAtCommit() |
 | Stage file | `git.add().addFilepattern(path).call()` | VsumPostCommitWatcher (auto-stage changelogs) |
 

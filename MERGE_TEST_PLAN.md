@@ -179,6 +179,7 @@ Reactions propagate model → model2:
 - All tests use `@TempDir` for isolated Git repos
 - EMF resource factory must be registered globally (`@BeforeAll`)
 - After `vsum.reload()`, `ChangeLogCapture` must be re-registered
-- View-based merge approach handles reactions automatically
+- Changelog-based merge replays deserialized EChanges via `resolveAndApply → assignIds → propagateChange`
+- Reactions fire automatically during `propagateChange()`, regenerating derived models
 - For conflict tests with state-based derivation, position-based matching
   causes false positives — need UUID-based changelogs for reliable conflict detection
