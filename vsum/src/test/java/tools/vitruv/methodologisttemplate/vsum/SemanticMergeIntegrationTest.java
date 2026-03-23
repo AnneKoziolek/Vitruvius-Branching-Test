@@ -552,13 +552,10 @@ public class SemanticMergeIntegrationTest {
                 var root = roots.iterator().next();
                 Set<String> entityNames = root.getEntities().stream()
                         .map(e -> e.getName()).collect(Collectors.toSet());
-                java.lang.System.out.println("Entities in merged model2: " + entityNames);
-                // At minimum, entities from ours branch (A + C) should be present
-                // The feature branch's entity (B) depends on reaction firing during replay
-                assertTrue(root.getEntities().size() >= 2,
-                        "Should have at least 2 entities (base + ours branch)");
-                assertTrue(entityNames.contains("ComponentA"), "Entity A should exist");
-                assertTrue(entityNames.contains("ComponentC"), "Entity C (ours) should exist");
+                assertEquals(3, root.getEntities().size(),
+                        "Should have 3 entities (from reactions): A + B + C");
+                assertTrue(entityNames.containsAll(Set.of("ComponentA", "ComponentB", "ComponentC")),
+                        "Entity names should match component names. Got: " + entityNames);
             }
 
             mergedVsum.dispose();
