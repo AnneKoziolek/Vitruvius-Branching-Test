@@ -17,8 +17,10 @@ import tools.vitruv.framework.views.CommittableView;
 import tools.vitruv.framework.views.ViewTypeFactory;
 import tools.vitruv.framework.vsum.VirtualModelBuilder;
 import tools.vitruv.framework.vsum.branch.data.ValidationResult;
+import tools.vitruv.framework.vsum.branch.handler.VsumPostCommitWatcher;
 import tools.vitruv.framework.vsum.branch.handler.VsumReloadWatcher;
 import tools.vitruv.framework.vsum.branch.handler.VsumValidationWatcher;
+import tools.vitruv.framework.vsum.branch.util.PostCommitTriggerFile;
 import tools.vitruv.framework.vsum.branch.util.ReloadTriggerFile;
 import tools.vitruv.framework.vsum.branch.util.ValidationResultFile;
 import tools.vitruv.framework.vsum.branch.util.ValidationTriggerFile;
@@ -252,39 +254,37 @@ class PreCommitValidationIntegrationTest {
 
     /**
      * Verifies that a semantic changelog file is written under
-     * {@code .vitruvius/changelogs/<shortSha>.txt} when a validation trigger is processed
-     * and the real VSUM passes validation.
+     * {@code .vitruvius/changelogs/<shortSha>.txt} when a post-commit trigger is processed.
+     * Changelog generation is handled by {@link VsumPostCommitWatcher}, not the validation watcher.
      */
     @Test
-    @DisplayName("Changelog file is written under .vitruvius/changelogs/ after a passing validation")
-    void passingValidationWritesChangelogFile() throws Exception {
-        var triggerFile = new ValidationTriggerFile(tempDir);
-        var resultFile  = new ValidationResultFile(tempDir);
-        var watcher     = new VsumValidationWatcher(vsum, tempDir);
+    @DisplayName("Changelog file is written under .vitruvius/changelogs/ after a post-commit trigger")
+    void postCommitWritesChangelogFile() throws Exception {
+        // Make a real Git commit so PostCommitHandler can read commit metadata via JGit.
+        git.add().addFilepattern(".").call();
+        var commit = git.commit().setMessage("test commit for changelog").call();
+        String realSha = commit.getName();
+
+        var postCommitTrigger = new PostCommitTriggerFile(tempDir);
+        var watcher = new VsumPostCommitWatcher(tempDir);
 
         watcher.start();
         try {
-            String requestId = triggerFile.createTrigger(COMMIT_SHA, BRANCH_MAIN);
-            waitForBothResultFiles(resultFile, requestId);
-
-            // confirm validation passed before checking for the changelog.
-            assertTrue(resultFile.readResult(requestId).isValid(),
-                    "validation must pass before checking for the changelog file");
+            postCommitTrigger.createTrigger(realSha, BRANCH_MAIN);
 
             // the changelog is written to .vitruvius/changelogs/<7-char SHA>.txt.
-            String shortSha      = COMMIT_SHA.substring(0, 7);
+            String shortSha      = realSha.substring(0, 7);
             Path   changelogPath = tempDir.resolve(".vitruvius")
                     .resolve("changelogs")
                     .resolve(shortSha + ".txt");
 
-            // the changelog write happens after the result files; give it a moment.
-            waitUntilFileExists(changelogPath, 2000);
+            waitUntilFileExists(changelogPath, 3000);
 
             assertTrue(Files.exists(changelogPath),
                     "changelog must be written at .vitruvius/changelogs/" + shortSha + ".txt");
 
             String content = Files.readString(changelogPath);
-            assertTrue(content.contains(COMMIT_SHA), "changelog must contain the full commit SHA");
+            assertTrue(content.contains(realSha), "changelog must contain the full commit SHA");
             assertTrue(content.contains(BRANCH_MAIN), "changelog must contain the branch name");
 
         } finally {
