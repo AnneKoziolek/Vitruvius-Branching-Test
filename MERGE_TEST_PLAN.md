@@ -138,13 +138,42 @@ Reactions propagate model → model2:
 - Merge feature → main
 - **Verify**: 20 components present, 20 corresponding entities
 
-### 6. Failure Cases
+### 6. Bidirectional Merge
 
-**6a. Replay failure produces meaningful error**
+**6a. Reverse resolves indirect conflict** *(high priority)*
+- Base: Component "Shared" → Entity "Shared"
+- Branch A: renames Component → "Alpha" (reaction derives Entity → "Alpha")
+- Branch B: directly renames Entity → "CustomName" (user intent)
+- `executeBidirectional()`: A→B has INDIRECT_CONFLICT, B→A is clean
+- **Verify**: result.isSuccess(), direction=REVERSED
+
+**6b. Both directions have indirect conflicts** *(high priority — BrakeCaseStudy)*
+- Base: BrakeDisk "disk1" ↔ Namespace "disk1" (bidirectional reactions)
+- Branch A: changes BrakeDisk.id → "diskA" (reaction: Namespace.id → "diskA")
+- Branch B: changes Namespace.id → "nsB" (reaction: BrakeComponent.id → "nsB")
+- `executeBidirectional()`: both A→B and B→A have INDIRECT_CONFLICTs
+- **Verify**: result is CONFLICT with BIDIRECTIONAL_INDIRECT_CONFLICT type
+
+**6c. Forward merge clean — no reverse attempted**
+- Base: System with ComponentA
+- Branch A: adds ComponentB, Branch B: adds ComponentC (non-overlapping)
+- `executeBidirectional()`: A→B has no indirect conflicts
+- **Verify**: result.isSuccess(), direction=FORWARD
+
+**6d. USER_VS_DERIVED_WARNING does not trigger reverse**
+- Base: Component "Shared" → Entity "Shared"
+- Branch A: directly renames Entity → "UserAEntity" (user intent on derived model)
+- Branch B: renames Component → "Beta" (reaction derives Entity → "Beta")
+- `executeBidirectional()`: only USER_VS_DERIVED_WARNING, no INDIRECT_CONFLICT
+- **Verify**: result.isSuccess(), direction=FORWARD (no reverse attempted)
+
+### 7. Failure Cases
+
+**7a. Replay failure produces meaningful error**
 - Construct a scenario where replay fails (e.g., structural incompatibility)
 - **Verify**: SemanticMergeResult contains meaningful error info, VSUM is not corrupted
 
-**6b. Missing merge base**
+**7b. Missing merge base**
 - Two branches with no common ancestor
 - **Verify**: Merge fails with clear error message about missing merge base
 

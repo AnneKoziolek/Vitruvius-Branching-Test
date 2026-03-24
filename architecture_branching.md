@@ -187,6 +187,8 @@ The VSUM is **not aware of Git**. It just reads and writes files to its storage 
 │  │  - ChangeLogCapture (intercept)       │  │
 │  │  - SemanticChangeLog (persist)        │  │
 │  │  - SemanticMergeEngine (replay)       │  │
+│  │    - merge() (directed A→B)           │  │
+│  │    - mergeBidirectional() (A↔B)       │  │
 │  │  - UuidConflictDetector (direct)      │  │
 │  │  - Snapshot-based warning detection   │  │
 │  └───────────────────────────────────────┘  │
@@ -232,8 +234,23 @@ For each transaction τᵢ in H_A:
 | Direct conflict | `MODIFY_MODIFY`, `DELETE_MODIFY`, `MODIFY_DELETE` | Yes | User(A) vs user(B) on same element+feature |
 | Indirect conflict | `INDIRECT_CONFLICT` | No (warning) | Derived(replay(A)) overwrites user(B) |
 | User vs derived | `USER_VS_DERIVED_WARNING` | No (warning) | User(A) overwrites derived(B) |
+| Bidirectional indirect | `BIDIRECTIONAL_INDIRECT_CONFLICT` | Yes | Both merge directions produce indirect conflicts |
 
 Blocking conflicts abort the merge (unless a `ConflictResolutionProvider` is supplied). Warnings are returned via `SemanticMergeResult.getWarnings()` and the merge proceeds.
+
+### Bidirectional Merge
+
+The directed merge (A→B) has a consistency problem: when derived(A) overwrites user(B), discarding derived(A) leaves the reaction unexecuted. The `mergeBidirectional()` method addresses this:
+
+```
+1. Try A→B (forward)
+2. If no INDIRECT_CONFLICTs → return forward result (direction=FORWARD)
+3. If INDIRECT_CONFLICTs → try B→A (reverse, with inverted OURS/THEIRS resolution)
+4. If reverse has no INDIRECT_CONFLICTs → return reverse result (direction=REVERSED)
+5. If both have INDIRECT_CONFLICTs → BIDIRECTIONAL_INDIRECT_CONFLICT (true conflict)
+```
+
+`SemanticMergeResult.getMergeDirection()` returns `FORWARD` or `REVERSED` to indicate which direction was used. `SemanticMergeCommand.executeBidirectional()` takes symmetric `branchA`/`branchB` parameters rather than directional `source`/`target`.
 
 ## Setting It Up in Your Own Project
 

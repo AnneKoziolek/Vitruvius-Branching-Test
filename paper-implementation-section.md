@@ -63,19 +63,24 @@ For each transaction $\tau_i^u$ from $H_A^u$:
 
    This snapshot-based approach is more robust than inspecting the CPR engine's `PropagatedChange` output, which may not expose all consequential changes at the granularity needed for element-level conflict detection.
 
-Indirect conflicts and user-vs-derived warnings are reported as non-blocking warnings in the merge result, reflecting the directed nature of the merge: since $A$'s changes are being integrated into $B$, the merge always completes, but the warnings alert the developer to potential semantic issues that deserve review.
+In the directed merge, indirect conflicts and user-vs-derived warnings are reported as non-blocking warnings, reflecting the asymmetric nature of the merge.
+However, discarding derived changes from the replay can leave the model inconsistent (the reaction's effect is lost).
+To address this, we additionally provide a *bidirectional merge* mode (`mergeBidirectional`): when the forward direction A→B produces indirect conflicts (derived(A) vs user(B)), the engine attempts the reverse direction B→A, where user(B)'s changes are replayed onto A and reactions fire naturally.
+If the reverse direction is clean, it is used instead (reported as `REVERSED` in the result).
+If both directions produce indirect conflicts, the merge is reported as a true blocking conflict (`BIDIRECTIONAL_INDIRECT_CONFLICT`), indicating that the reactions in both directions interfere with user intent on the other branch.
 
 ## Validation
 
 We validated the implementation on two case studies.
 
 The first case study (*Vitruvius-Branching-Test*) uses two coupled metamodels (a system/component model and a derived root/entity model) with bidirectional consistency reactions.
-It covers 26 test scenarios including branch switching, pre-commit validation, changelog generation, and semantic merge with conflict resolution.
+It covers 29 test scenarios including branch switching, pre-commit validation, changelog generation, semantic merge with conflict resolution, and bidirectional merge with direction selection.
 
 The second case study (*BrakeCaseStudy*) models an automotive brake engineering domain with three coupled models: a brake system model ($M_1$, primary), a CAD parameter model ($M_2$, bidirectional with $M_1$), and a safety assessment model ($M_3$, derived from $M_1$).
 This three-model setup exercises all conflict categories from the formalization:
 clean merges where derived changes propagate across all three models without interference (3 scenarios),
 indirect conflicts where a CPR triggered by replaying $A$ overwrites a user change on $B$ (2 scenarios),
 a user-vs-derived warning where $A$'s explicit edit to the CAD model overwrites a reaction-derived value on $B$ (1 scenario),
-and a direct user-vs-user conflict on the same attribute (1 scenario).
+a direct user-vs-user conflict on the same attribute (1 scenario),
+and bidirectional merge scenarios where the reverse direction resolves an indirect conflict (1 scenario) or both directions produce indirect conflicts via the bidirectional M₁↔M₂ reactions (1 scenario).
 All 36 tests (29 existing + 7 new three-model scenarios) pass, and the warning assertions confirm that the detection mechanisms correctly classify each case.

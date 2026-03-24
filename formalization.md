@@ -248,7 +248,40 @@ function merge(A → B):
 
 ---
 
-## 10. Properties
+## 10. Bidirectional Merge
+
+### Motivation
+
+In a directed merge A→B, if derived(A) overwrites user(B) (IndirectConflict), B's user intent wins but the reaction that produced derived(A) is not fully applied—the resulting model may be inconsistent.
+
+### Definition
+
+```
+merge_bi(⟨m_base⟩, H_Aᵘ, H_Bᵘ) =
+    let result_fwd = merge_{A→B}(⟨m_base⟩, H_Aᵘ, H_Bᵘ)
+    if no IndirectConflict in result_fwd:
+        return result_fwd                           (direction = FORWARD)
+
+    let result_rev = merge_{B→A}(⟨m_base⟩, H_Bᵘ, H_Aᵘ)
+    if no IndirectConflict in result_rev:
+        return result_rev                           (direction = REVERSED)
+
+    return BidirectionalIndirectConflict             (true conflict)
+```
+
+### Rationale
+
+In B→A, user(B)'s changes are replayed onto A's state. Reactions fire naturally for B's changes, producing consistent derived state. If no indirect conflicts arise, the merged model is consistent.
+
+If both directions produce indirect conflicts, the reactions in both directions interfere with user intent on the other branch—a true semantic conflict requiring user resolution.
+
+### Conflict Resolution Provider Inversion
+
+Direct conflicts (user vs user) are symmetric. When attempting the reverse direction, the conflict resolution provider must invert OURS↔THEIRS since the roles are swapped.
+
+---
+
+## 11. Properties
 
 ### Consistency
 
@@ -262,7 +295,11 @@ Final state is consistent:
 
 User changes on B are never silently overwritten.
 
-### Directedness
+### Directedness (Directed Merge)
 
-Merge is asymmetric (A → B).
+Directed merge is asymmetric (A → B).
+
+### Symmetry (Bidirectional Merge)
+
+Bidirectional merge considers both directions and selects the one that avoids indirect conflicts. The result indicates which direction was used (FORWARD or REVERSED). If neither direction is clean, a BIDIRECTIONAL_INDIRECT_CONFLICT is reported.
 
