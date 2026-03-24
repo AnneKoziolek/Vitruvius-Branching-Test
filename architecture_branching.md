@@ -187,6 +187,8 @@ The VSUM is **not aware of Git**. It just reads and writes files to its storage 
 │  │  - ChangeLogCapture (intercept)       │  │
 │  │  - SemanticChangeLog (persist)        │  │
 │  │  - SemanticMergeEngine (replay)       │  │
+│  │  - UuidConflictDetector (direct)      │  │
+│  │  - Snapshot-based warning detection   │  │
 │  └───────────────────────────────────────┘  │
 │                                             │
 │  example.model   example.model2   pom.xml   │
@@ -194,6 +196,44 @@ The VSUM is **not aware of Git**. It just reads and writes files to its storage 
 ```
 
 The key insight: **`VirtualModel.reload()`** is the single integration point. When Git changes the files on disk (via checkout, merge, etc.), the branching layer calls `reload()` and the VSUM refreshes its in-memory state from the new files. The VSUM doesn't know or care that Git caused the files to change.
+
+## Merge Conflict and Warning Detection
+
+The `SemanticMergeEngine` performs a directed merge (A→B) with three levels of conflict/warning detection, corresponding to §8.2–§8.4 of the formalization.
+
+### Detection Pipeline per Transaction
+
+```
+For each transaction τᵢ in H_A:
+
+  1. DIRECT CONFLICT (§8.2) — before replay
+     UuidConflictDetector compares A's and B's changelog DTOs by UUID+feature.
+     Same element+feature modified differently → MODIFY_MODIFY (blocking).
+
+  2. USER_VS_DERIVED WARNING (§8.3) — before replay
+     If A's user change targets an element that EXISTS in B's VSUM but is
+     NOT in B's user changelogs → B's value was derived by reactions.
+     A's user intent overwrites derived(B) → warning (non-blocking).
+     Detection uses buildUuidMap() to check the loaded VSUM model state.
+
+  3. REPLAY: apply τᵢ → reactions fire → derived changes generated
+
+  4. INDIRECT CONFLICT (§8.4) — after replay
+     Snapshot user(B) footprint values before replay, compare after.
+     If a value changed but wasn't a direct user(A) change → a reaction
+     from A's replay overwrote user(B)'s intent → warning (non-blocking).
+     Detection uses snapshotUserFootprintValues() + detectIndirectConflictsViaSnapshot().
+```
+
+### Result Types
+
+| Type | Enum | Blocking? | Meaning |
+|------|------|-----------|---------|
+| Direct conflict | `MODIFY_MODIFY`, `DELETE_MODIFY`, `MODIFY_DELETE` | Yes | User(A) vs user(B) on same element+feature |
+| Indirect conflict | `INDIRECT_CONFLICT` | No (warning) | Derived(replay(A)) overwrites user(B) |
+| User vs derived | `USER_VS_DERIVED_WARNING` | No (warning) | User(A) overwrites derived(B) |
+
+Blocking conflicts abort the merge (unless a `ConflictResolutionProvider` is supplied). Warnings are returned via `SemanticMergeResult.getWarnings()` and the merge proceeds.
 
 ## Setting It Up in Your Own Project
 
