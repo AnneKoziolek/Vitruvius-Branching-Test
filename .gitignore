@@ -9,3 +9,4 @@ model/plugin.xml
 .mvn/wrapper/maven-wrapper.jar
 three-way-merge-plan.md
 claude-branching-plan.md
+org/eclipse/emf/compare/Comparison.class
