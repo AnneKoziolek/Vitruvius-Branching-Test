@@ -785,6 +785,150 @@ public class SemanticMergeIntegrationTest {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // Interleaving merge tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    @Test
+    @DisplayName("interleaving merge: finds clean ordering where directed A->B has indirect conflict")
+    void interleavingMerge_cleansUpDirectedConflict(@TempDir Path tempDir) throws Exception {
+        var interactionProvider = new TestUserInteraction.ResultProvider(new TestUserInteraction());
+        var spec = new Model2Model2ChangePropagationSpecification();
+
+        try (var git = Git.init().setDirectory(tempDir.toFile()).setInitialBranch("main").call()) {
+            // Base: Component "Shared" -> reaction creates Entity "Shared"
+            InternalVirtualModel vsum = createVirtualModel(tempDir);
+            addSystemWithComponent(vsum, tempDir, "Shared");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Base").call();
+
+            // Branch A (feature): rename Component "Shared" -> "Alpha"
+            // Reaction will rename Entity "Shared" -> "Alpha"
+            git.branchCreate().setName("feature").call();
+            git.checkout().setName("feature").call();
+            var capture = ChangeLogCapture.create(vsum.getUuidResolver(),
+                    vsum.getViewSourceModels().iterator().next().getResourceSet());
+            vsum.addChangePropagationListener(capture);
+
+            renameComponent(vsum, "Shared", "Alpha");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Renamed Component to Alpha").call();
+            String featureSha = git.log().setMaxCount(1).call().iterator().next().getName();
+            new SemanticChangeLog(featureSha, "feature", capture.drainChanges(),
+                    capture.drainUuidMapping()).saveTo(tempDir);
+            git.add().addFilepattern(".").call();
+            git.commit().setAmend(true).setMessage("Renamed Component to Alpha + changelog").call();
+
+            // Branch B (main): directly rename Entity "Shared" -> "CustomName" (user intent)
+            git.checkout().setName("main").call();
+            vsum.reload();
+            vsum.removeChangePropagationListener(capture);
+            capture = ChangeLogCapture.create(vsum.getUuidResolver(),
+                    vsum.getViewSourceModels().iterator().next().getResourceSet());
+            vsum.addChangePropagationListener(capture);
+
+            renameEntity(vsum, "Shared", "CustomName");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Renamed Entity to CustomName").call();
+            String mainSha = git.log().setMaxCount(1).call().iterator().next().getName();
+            new SemanticChangeLog(mainSha, "main", capture.drainChanges(),
+                    capture.drainUuidMapping()).saveTo(tempDir);
+            git.add().addFilepattern(".").call();
+            git.commit().setAmend(true).setMessage("Renamed Entity to CustomName + changelog").call();
+
+            vsum.dispose();
+
+            // Interleaving merge: A->B has INDIRECT_CONFLICT; B->A should be clean
+            SemanticMergeCommand mergeCmd = new SemanticMergeCommand();
+            SemanticMergeResult result = mergeCmd.executeWithInterleaving(
+                    tempDir, "feature", "main", List.of(spec), interactionProvider, null);
+
+            assertTrue(result.isSuccess(),
+                    "Interleaving merge should succeed - at least one ordering avoids indirect conflicts");
+
+            boolean hasIndirectConflict = result.getWarnings().stream()
+                    .anyMatch(w -> w.getType() == MergeConflict.ConflictType.INDIRECT_CONFLICT);
+            assertFalse(hasIndirectConflict,
+                    "The chosen ordering should have no INDIRECT_CONFLICT warnings");
+
+            java.lang.System.out.println("=== Interleaving CleanUpDirectedConflict PASSED ===");
+            java.lang.System.out.println("Direction: " + result.getMergeDirection());
+            java.lang.System.out.println("Warnings: " + result.getWarnings());
+        }
+    }
+
+    @Test
+    @DisplayName("interleaving merge: reports INTERLEAVING_CONFLICT when no ordering works")
+    void interleavingMerge_reportsConflictWhenNoOrderingWorks(@TempDir Path tempDir) throws Exception {
+        var interactionProvider = new TestUserInteraction.ResultProvider(new TestUserInteraction());
+        var spec = new Model2Model2ChangePropagationSpecification();
+
+        try (var git = Git.init().setDirectory(tempDir.toFile()).setInitialBranch("main").call()) {
+            // Base: Component "Shared" -> reaction creates Entity "Shared"
+            InternalVirtualModel vsum = createVirtualModel(tempDir);
+            addSystemWithComponent(vsum, tempDir, "Shared");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Base").call();
+
+            // Branch A (feature): rename Component "Shared" -> "Alpha"
+            // Reaction renames Entity "Shared" -> "Alpha" (model1->model2)
+            git.branchCreate().setName("feature").call();
+            git.checkout().setName("feature").call();
+            var capture = ChangeLogCapture.create(vsum.getUuidResolver(),
+                    vsum.getViewSourceModels().iterator().next().getResourceSet());
+            vsum.addChangePropagationListener(capture);
+
+            renameComponent(vsum, "Shared", "Alpha");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Renamed Component to Alpha").call();
+            String featureSha = git.log().setMaxCount(1).call().iterator().next().getName();
+            new SemanticChangeLog(featureSha, "feature", capture.drainChanges(),
+                    capture.drainUuidMapping()).saveTo(tempDir);
+            git.add().addFilepattern(".").call();
+            git.commit().setAmend(true).setMessage("Renamed Component to Alpha + changelog").call();
+
+            // Branch B (main): rename Component "Shared" -> "Beta"
+            // Reaction renames Entity "Shared" -> "Beta" (model1->model2)
+            // This creates a MODIFY_MODIFY direct conflict on Component.name
+            git.checkout().setName("main").call();
+            vsum.reload();
+            vsum.removeChangePropagationListener(capture);
+            capture = ChangeLogCapture.create(vsum.getUuidResolver(),
+                    vsum.getViewSourceModels().iterator().next().getResourceSet());
+            vsum.addChangePropagationListener(capture);
+
+            renameComponent(vsum, "Shared", "Beta");
+
+            git.add().addFilepattern(".").call();
+            git.commit().setMessage("Renamed Component to Beta").call();
+            String mainSha = git.log().setMaxCount(1).call().iterator().next().getName();
+            new SemanticChangeLog(mainSha, "main", capture.drainChanges(),
+                    capture.drainUuidMapping()).saveTo(tempDir);
+            git.add().addFilepattern(".").call();
+            git.commit().setAmend(true).setMessage("Renamed Component to Beta + changelog").call();
+
+            vsum.dispose();
+
+            // Interleaving merge: both rename the same Component -> direct MODIFY_MODIFY conflict
+            // Interleaving cannot help with direct conflicts
+            SemanticMergeCommand mergeCmd = new SemanticMergeCommand();
+            SemanticMergeResult result = mergeCmd.executeWithInterleaving(
+                    tempDir, "feature", "main", List.of(spec), interactionProvider, null);
+
+            assertFalse(result.isSuccess(),
+                    "Interleaving merge should fail - direct conflict cannot be resolved by ordering");
+
+            java.lang.System.out.println("=== Interleaving NoOrderingWorks PASSED ===");
+            java.lang.System.out.println("Status: " + result.getStatus());
+            java.lang.System.out.println("Conflicts: " + result.getConflicts());
+        }
+    }
+
     // === Helper methods ===
 
     private InternalVirtualModel createVirtualModel(Path projectPath) throws IOException {
